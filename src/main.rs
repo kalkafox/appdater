@@ -1,10 +1,9 @@
-use std::ops::{Add, Sub};
+use std::path::Path;
 
 use clap::Parser;
 use futures_util::StreamExt;
 use tokio::{io::AsyncWriteExt, process::Command};
-
-const LATEST_VERSION_NUMBER: i32 = 244;
+use url::Url;
 
 /// Scrapes a site and checks bundler (js) size
 #[derive(Parser, Debug)]
@@ -29,8 +28,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let args = Args::parse();
-
-    let mut latest_version_number: i32 = LATEST_VERSION_NUMBER;
     let vars = std::env::vars();
 
     let home = vars
@@ -44,40 +41,71 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         download_dir = args.download_dir.unwrap();
     }
 
-    let url = &format!(
-        "https://dl-canary.discordapp.net/apps/linux/0.0.{}/discord-canary-0.0.{}.tar.gz",
-        LATEST_VERSION_NUMBER, LATEST_VERSION_NUMBER
-    );
+    // Check if args.download_dir/Downloads/DiscordCanary exists
+    let discord_dir = format!("{}/Downloads/DiscordCanary", download_dir);
 
-    let res = reqwest::get(url).await?;
-
-    let mut status = res.status();
-
-    while status.as_u16() == 200 {
-        latest_version_number = latest_version_number.add(1);
-
-        let res = reqwest::get(url.replace(
-            &LATEST_VERSION_NUMBER.to_string(),
-            &latest_version_number.to_string(),
-        ))
-        .await?;
-
-        status = res.status();
+    if !Path::new(&discord_dir).exists() {
+        println!("DiscordCanary directory not found.");
+        std::process::exit(0)
     }
 
-    latest_version_number = latest_version_number.sub(1);
+    // Read the version number from the latest DiscordCanary file (located in args.download_dir/Downloads/DiscordCanary/resources/build_info.json)
+    let build_info_path = format!("{}/resources/build_info.json", discord_dir);
 
-    let res = reqwest::get(url.replace(
-        &LATEST_VERSION_NUMBER.to_string(),
-        &latest_version_number.to_string(),
-    ))
-    .await?;
+    let build_info = std::fs::read_to_string(build_info_path)?;
 
-    println!("Downloading discord version {}", latest_version_number);
+    let build_info: serde_json::Value = serde_json::from_str(&build_info)?;
+
+    let version_number = build_info["version"].as_str().unwrap();
+
+    println!("DiscordCanary version: {}", version_number);
+
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+
+    let download_url = "https://discordapp.com/api/download/canary?platform=linux&format=tar.gz";
+
+    let res = client.get(download_url).send().await?;
+
+    if !res.status().is_redirection() {
+        println!("Error downloading DiscordCanary");
+        std::process::exit(0)
+    }
+
+    // get the location
+    let location = res.headers().get("location").unwrap();
+
+    println!("Location: {:?}", location);
+
+    let url = Url::parse(location.to_str()?)?;
+
+    let remote_version_number = url.path_segments().unwrap().nth(2).unwrap();
+
+    println!("Version number: {}", version_number);
+
+    if version_number == remote_version_number {
+        println!("Version matches, no need to download");
+        std::process::exit(0)
+    }
+
+    // std::process::exit(0);
+
+    println!(
+        "Downloading discord version {}, updating from {}",
+        remote_version_number, version_number
+    );
+
+    let res = client.get(url.as_str()).send().await?;
+
+    if !res.status().is_success() {
+        println!("Error downloading DiscordCanary");
+        std::process::exit(0)
+    }
 
     let mut file = tokio::fs::File::create(format!(
         "/tmp/discord-canary-0.0.{}.tar.gz",
-        latest_version_number
+        remote_version_number
     ))
     .await?;
 
@@ -91,10 +119,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .arg("xzvf")
         .arg(format!(
             "/tmp/discord-canary-0.0.{}.tar.gz",
-            latest_version_number
+            remote_version_number
         ))
         .arg("-C")
-        .arg(format!("{}/Downloads", download_dir))
+        .arg(format!("{}", download_dir))
         .output()
         .await?;
 
