@@ -197,6 +197,11 @@ async fn download_vscode(download_dir: String) -> Result<(), Box<dyn std::error:
 
     let latest_data = data.first().ok_or("No GitHub releases")?;
 
+    if version_number == latest_data.tag_name {
+        println!("Version matches, no need to download");
+        std::process::exit(0)
+    }
+
     println!("{:?}", latest_data.tag_name);
 
     let download_res = client.get(download_url).send().await?;
@@ -212,11 +217,6 @@ async fn download_vscode(download_dir: String) -> Result<(), Box<dyn std::error:
         .get("location")
         .ok_or("Location header not found")?;
 
-    if version_number == latest_data.tag_name {
-        println!("Version matches, no need to download");
-        std::process::exit(0)
-    }
-
     println!("Location: {:?}", location);
 
     let url = Url::parse(location.to_str()?)?;
@@ -229,7 +229,7 @@ async fn download_vscode(download_dir: String) -> Result<(), Box<dyn std::error:
     let res = client.get(url.as_str()).send().await?;
 
     if !res.status().is_success() {
-        println!("Error downloading DiscordCanary");
+        println!("Error downloading VSCode");
         std::process::exit(0)
     }
 
